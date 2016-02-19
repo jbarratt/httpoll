@@ -1,12 +1,14 @@
 package main
 
+// httpoll asynchronously queries a provided set of URLs and presents
+// them graphically in the browser, leveraging the delicious termui
+
 import (
 	"bytes"
 	"fmt"
-	"net/http"
 	"os"
+	"strings"
 	"sync"
-	"time"
 
 	ui "github.com/gizak/termui"
 )
@@ -18,79 +20,19 @@ const (
 	rowHeight   = 8
 )
 
-type SiteStatus struct {
-	url            string
-	status         string
-	healthy        bool
-	responseMillis int
-}
-
-type SiteHistory struct {
-	now        SiteStatus
-	pastMillis []int
-}
-
+// urlWidgets tracks all the widgets needed to present the state of a given
 type urlWidgets struct {
 	label     *ui.Par
 	sparkline *ui.Sparkline
 }
 
+// histLock globally locks the history status map
+// UI display should lock it for reading
+// Web results should lock it for read and write.
 var histLock sync.RWMutex
 
-func (s SiteStatus) String() string {
-	return fmt.Sprintf("{url: %s, status: %s, healthy? %s, responseTime: %d ms}", s.url, s.status, s.healthy, s.responseMillis)
-}
-
-func fetch_url(url string, statuses chan SiteStatus, c *http.Client) {
-	time_start := time.Now()
-	resp, err := c.Get(url)
-	if err != nil {
-		statuses <- SiteStatus{url, err.Error(), false, 0}
-	} else {
-		defer resp.Body.Close()
-		elapsed := int(time.Since(time_start) / time.Millisecond)
-		if resp.StatusCode < 300 {
-			statuses <- SiteStatus{url, resp.Status, true, elapsed}
-		} else {
-			statuses <- SiteStatus{url, resp.Status, false, 0}
-		}
-	}
-}
-
-func time_response(url string, statuses chan SiteStatus) {
-	timeout := time.Duration(httpTimeout * time.Second)
-	client := http.Client{Timeout: timeout}
-	ticker := time.NewTicker(refreshTime * time.Second)
-	for {
-		select {
-		case <-ticker.C:
-			fetch_url(url, statuses, &client)
-		}
-	}
-}
-
-func fetch_urls(urls []string, siteHistory map[string]*SiteHistory, statuses chan SiteStatus) {
-	for _, url := range urls {
-		histLock.Lock()
-		hist := SiteHistory{
-			pastMillis: make([]int, bufferSize, bufferSize),
-		}
-		siteHistory[url] = &hist
-		histLock.Unlock()
-		go time_response(url, statuses)
-	}
-	for {
-		select {
-		case s := <-statuses:
-			histLock.Lock()
-			hist := siteHistory[s.url]
-			hist.now = s
-			hist.pastMillis = append(hist.pastMillis[1:], s.responseMillis)
-			histLock.Unlock()
-		}
-	}
-}
-
+// statusString formats a string in termui color syntax
+// given the provided 'ok' state (red if false, green if true)
 func statusString(text string, ok bool) string {
 	if ok {
 		return fmt.Sprintf("[%s](fg-green)", text)
@@ -99,33 +41,14 @@ func statusString(text string, ok bool) string {
 	}
 }
 
-func upAverage(data []int) float64 {
-	total := 0
-	countable := 0
-	for _, value := range data {
-		if value > 0 {
-			total += value
-			countable++
-		}
-	}
-	if countable > 0 {
-		return float64(total) / float64(countable)
-	} else {
-		return 0.0
-	}
-}
-
-func main() {
-	statuses := make(chan SiteStatus)
-	siteHistory := make(map[string]*SiteHistory)
-	urls := os.Args[1:]
-	go fetch_urls(urls, siteHistory, statuses)
-
+// buildUI builds out the termUI user interface
+// it returns a *urlWidgets which has a map of
+// all widgets per domain so they can be accessed later.
+func buildUI(urls []string) map[string]*urlWidgets {
 	err := ui.Init()
 	if err != nil {
 		panic(err)
 	}
-	defer ui.Close()
 
 	widgets := make(map[string]*urlWidgets)
 	for _, url := range urls {
@@ -159,10 +82,40 @@ func main() {
 	ui.Body.Align()
 	ui.Render(ui.Body)
 
+	return widgets
+}
+
+func main() {
+	urls := os.Args[1:]
+	if len(urls) == 0 {
+		fmt.Println("Error: No URLS to poll!")
+		fmt.Println("Usage: httpoll http://firstdomain.com/foo https://seconddomain.com/bar")
+		os.Exit(1)
+	}
+
+	for i, url := range urls {
+		if !strings.HasPrefix(url, "http") {
+			urls[i] = fmt.Sprintf("http://%s", url)
+		}
+	}
+
+	statuses := make(chan SiteStatus)
+	siteHistory := make(map[string]*SiteHistory)
+	go fetch_urls(urls, siteHistory, statuses)
+
+	widgets := buildUI(urls)
+	defer ui.Close()
+
 	ui.Handle("/sys/kbd/q", func(ui.Event) {
 		ui.StopLoop()
 	})
+	ui.Handle("/sys/kbd/C-c", func(ui.Event) {
+		ui.StopLoop()
+	})
 	ui.Handle("/timer/1s", func(ui.Event) {
+
+		// Read the current state out of the history object
+		// per URL, update the relevant widget contents
 		histLock.RLock()
 		for _, url := range urls {
 			state := siteHistory[url]
