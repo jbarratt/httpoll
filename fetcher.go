@@ -48,7 +48,7 @@ func fetch_url(url string, statuses chan SiteStatus, c *http.Client) {
 // as needed.
 func time_response(url string, statuses chan SiteStatus) {
 	timeout := time.Duration(httpTimeout * time.Second)
-	client := http.Client{Timeout: timeout}
+	client := http.Client{Timeout: (timeout * time.Second)}
 	ticker := time.NewTicker(refreshTime * time.Second)
 	for {
 		select {
