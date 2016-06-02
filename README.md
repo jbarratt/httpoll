@@ -2,7 +2,7 @@
 
 It was a dark and stormy night. You were about to make some (totally safe!) change to some http-serving system. But you just wanted that extra safety blanket to make sure it wasn't all going to explode as you worked.
 
-Enter httpoll.
+Enter httpoll...and your mom.
 
 You ran
 
